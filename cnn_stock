@@ -1,0 +1,252 @@
+# encoding:utf-8
+# 测试东西
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torchvision import datasets,transforms
+print (torch.__version__)
+import numpy as np
+
+BATCH_SIZE = 1
+EPOCHS = 20
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+#获取训练集的数据
+train_loader = torch.utils.data.DataLoader(
+                datasets.MNIST('data',train=True,download = True,
+                transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.1307,),(0.3081,))])),
+                batch_size = BATCH_SIZE,shuffle = True)
+
+#获取测试集数据
+test_loader = torch.utils.data.DataLoader(
+                datasets.MNIST('data',train = False,transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize((0.1307,),(0.3081,))
+                ])),
+                batch_size = BATCH_SIZE,shuffle = True)
+                
+
+#定义一个卷积神经网络
+class ConvNet(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # 每张图片的格式为28*28
+        self.conv1 = nn.Conv2d(4,10,3)# 10个卷积核，5*5
+        self.conv2 = nn.Conv2d(10,20,2)# 10个输入，20个卷积核，3
+        self.fc1 = nn.Linear(1020,450)
+        self.fc2 = nn.Linear(450,2) 
+        
+    def forward(self,x):
+        in_size = x.size(0)
+        out = self.conv1(x)
+
+        
+        out = F.relu(out)
+        #out = F.max_pool2d(out,2,2)
+        out = self.conv2(out)
+        #print (out.size())
+        out = F.relu(out)
+        out = out.view(-1,self.num_flat_features(out))
+        #print (out.size())
+        #input()
+        out = self.fc1(out)
+        out = F.relu(out)
+        
+        out = self.fc2(out)
+        out = F.softmax(out,dim=1)
+        return out 
+    def num_flat_features(self,x):
+        size = x.size()[1:]
+        num_features = 1
+        for s in size:
+            num_features*=s
+        return num_features
+model = ConvNet().to(DEVICE)
+optimizer = optim.Adam(model.parameters())
+
+# 定义一个训练
+def train(model,device,train_loader,optimizer,epoch):
+    model.train()
+    for batch_idx,(data,target) in enumerate(train_loader):
+        data,target = data.to(device),target.to(device)
+        optimizer.zero_grad()
+        output= model(data)
+        target = torch.tensor(target,dtype = torch.long)
+        loss = F.nll_loss(output,target)
+        loss.backward()
+        optimizer.step()
+        if (batch_idx+1)%30 ==0:
+            print ('Train Epoch:{}[{}/{} ({:.0f}%)]\tLoss:{:.6f}'.format(
+            epoch,batch_idx*len(data),len(train_loader.dataset),
+            100.*batch_idx/len(train_loader),loss.item()))
+            
+# 定义一个测试文件夹
+def test(model,device,test_loader):
+    model.eval()
+    test_loss = 0
+    correct = 0
+    with torch.no_grad():
+        for data,target in test_loader:
+            data,target = data.to(device),target.to(device)
+            target = torch.tensor(target,dtype = torch.long)
+            output = model(data)
+            test_loss+=F.nll_loss(output,target,reduction = 'sum').item() # 将损失进行增加
+            pred= output.max(1,keepdim = True)[1]
+            correct+=pred.eq(target.view_as(pred)).sum().item()
+    test_loss /= len(test_loader.dataset)
+    print ('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+        test_loss, correct, len(test_loader.dataset),
+        100. * correct / len(test_loader.dataset)))
+               
+        
+'''       
+for epoch in range(1,EPOCHS+1):
+        train(model,DEVICE,train_loader,optimizer,epoch)
+        test(model,DEVICE,test_loader)
+input()
+'''
+'''
+for batch_idx,(data,target) in enumerate(train_loader):
+    print (batch_idx,data.size(),target,len(target)),
+    print (data[0].size())
+    input()
+'''
+#定义一个函数，进行数据的预处理
+from load_data.loader import load_day_data
+import pandas as pd 
+import numpy as np
+from torch.utils.data import Dataset,DataLoader,TensorDataset
+from torch.autograd import Variable
+class Data_preprocessing(object):
+    '''
+    本类的作用是为了进行股票数据的预处理
+    '''
+    def __init__(self,startdate,enddate,stock_list,columns = 'all',batch_size = 100):
+        '''
+        batch_size为每个小块的数量
+        '''
+        self.startdate = startdate
+        self.enddate = enddate
+        self.columns = columns
+        self.stock_list = stock_list
+        
+    def data_get(self):
+        '''
+        本函数的作用是为了获取基础的因子数据
+        这里我们以开、收、最高、最低进行处理，以20,10,5，和当前的价格作为demo
+        
+        '''
+        (data,start,end) = load_day_data(stockList = self.stock_list,start = self.startdate,end = self.enddate)
+        #new_data = OrderedDict()
+        train_target= []
+        train_data = []
+        test_target = []
+        test_data = []
+        index_num = []
+        # 从每只股票来进行
+        t = 0
+        for stock in self.stock_list:
+            print (stock)
+            stock_now = data[stock].fillna(method = 'pad')
+            #print (len(stock_now['open']))
+            #input()
+            shift_1 = stock_now.shift(1) # 向前平移1个交易
+            shift_5 = stock_now.shift(5) # 向前平移5个交易日
+            shift_10 = stock_now.shift(10) # 向前平移10个交易日
+            shift_20 = stock_now.shift(20) # 向前平移20个交易日
+            mean_5 = stock_now.rolling(5).mean() # 5日移动平均
+            mean_20 = stock_now.rolling(20).mean() # 20日移动平均
+            target = list((stock_now.shift(-5)['close']/stock_now['close']) -1)[20:-5]
+            open_shouyi = np.array([[float('%.2f'%i) for i in list(stock_now['open']/shift_1['open']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['open']/shift_5['open']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['open']/shift_10['open']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['open']/shift_20['open']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['open']/mean_5['open']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['open']/mean_20['open']*100-100)[20:-5]]
+                            ])      
+            close_shouyi = np.array([[float('%.2f'% i) for i in list(stock_now['close']/shift_1['close']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['close']/shift_5['close']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['close']/shift_10['close']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['close']/shift_20['close']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['close']/mean_5['close']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['close']/mean_20['close']*100-100)[20:-5]],
+                            ])
+            high_shouyi = np.array([[float('%.2f'% i) for i in list(stock_now['high']/shift_1['high']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['high']/shift_5['high']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['high']/shift_10['high']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['high']/shift_20['high']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['high']/mean_5['high']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['high']/mean_20['high']*100-100)[20:-5]],
+                            ])
+            low_shouyi = np.array([[float('%.2f'% i) for i in list(stock_now['low']/shift_1['low']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['low']/shift_5['low']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['low']/shift_10['low']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['low']/shift_20['low']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['low']/mean_5['low']*100-100)[20:-5]],
+                            [float('%.2f'% i) for i in list(stock_now['low']/mean_20['low']*100-100)[20:-5]],
+                            ])
+            print (len(open_shouyi[0]),len(open_shouyi[1]),len(open_shouyi[2]),len(open_shouyi[3]))
+            tt = [i for i in range(len(target))]
+            for i in tt[0:-25]:
+                train_target.append(target[i+20])
+                dangge = [open_shouyi[:,i:i+20],
+                            close_shouyi[:,i:i+20],
+                            high_shouyi[:,i:i+20],
+                            low_shouyi[:,i:i+20]]
+                 
+                train_data.append(dangge)
+                #index_num.append(t)
+            for i in tt[-25:-20]:
+                test_target.append(target[i+20])
+                dangge = [open_shouyi[:,i:i+20],
+                            close_shouyi[:,i:i+20],
+                            high_shouyi[:,i:i+20],
+                            low_shouyi[:,i:i+20]]
+                 
+                test_data.append(dangge)
+        return (train_data,train_target,test_data,test_target)
+
+class DealDataset(Dataset):
+    '''
+    初始化和处理数据
+    '''
+    def __init__(self,x_data,y_data):    
+        self.y_data = torch.from_numpy(np.array(y_data)).float()
+        #self.y_data = torch.tensor(self.y_data,dtype = torch.long)
+        self.x_data = torch.from_numpy(np.array(x_data)).float()
+        self.len = self.y_data.shape[0]
+        
+    def __getitem__(self,index):
+        return self.x_data[index],self.y_data[index]
+    
+    def __len__(self):
+        return self.len
+
+        
+stocks = list(pd.read_csv('C:\\Users\\94006\\Desktop\\HS300.csv')['HS300'])[0:2]
+start_time = '2017-06-30'
+end_time= '2018-12-30'
+stock_list = [str(i).zfill(6) for i in stocks]                
+data_lei = Data_preprocessing(startdate=start_time,enddate=end_time,stock_list = stock_list)                
+(train_data,train_target,test_data,test_target) = data_lei.data_get()
+a = [1 if i>=0 else 0 for i in train_target]
+train_x = train_data
+train_y = a
+dealDataset = DealDataset(x_data = train_x,y_data = train_y)
+train_loader = DataLoader(dataset = dealDataset,batch_size = 30,shuffle = True)
+#train_data 
+
+ab = [1 if i>=0 else 0 for i in test_target]
+test_data = DealDataset(x_data = test_data,y_data = ab)
+test_data = DataLoader(dataset = test_data,batch_size = 30,shuffle = True)
+# 测试数据
+print(u'测试数据准备好')
+print (dealDataset.x_data.size()) 
+input()
+for epoch in range(1,EPOCHS+1):
+        train(model,DEVICE,train_loader,optimizer,epoch)
+        test(model,DEVICE,test_data)          
